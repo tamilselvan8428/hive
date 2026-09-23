@@ -248,8 +248,8 @@ const Dborad = () => {
                 hwMode === "MANUAL"
                   ? "Manual control command executed"
                   : hwHeaterStatus === "ON"
-                  ? "Temperature fell below 30.0°C"
-                  : "Temperature rose above 35.0°C",
+                  ? "Temperature rose above 35.0°C"
+                  : "Temperature fell to 35.0°C or below",
             });
           }
           lastKnownHeaterStatusRef.current = hwHeaterStatus;
