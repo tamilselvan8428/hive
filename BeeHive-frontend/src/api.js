@@ -2,7 +2,7 @@ import axios from 'axios'
 
 // Dynamic API URL resolver (supports mobile IP, local override, or default)
 export const getApiBaseUrl = () => {
-  return localStorage.getItem('api_server_url') || import.meta.env.VITE_API_URL || 'http://10.99.165.134:5000'
+  return localStorage.getItem('api_server_url') || import.meta.env.VITE_API_URL || 'https://hive-lk13.onrender.com'
 }
 
 export const setApiBaseUrl = (url) => {

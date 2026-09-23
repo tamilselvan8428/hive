@@ -48,7 +48,6 @@ const Dborad = () => {
   });
 
   const [loadingHeater, setLoadingHeater] = useState(false);
-  const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [showNotificationCenter, setShowNotificationCenter] = useState(false);
   const [notifications, setNotifications] = useState([]);
@@ -426,34 +425,6 @@ const Dborad = () => {
     });
   };
 
-  // Save Threshold Settings
-  const handleSaveThresholds = async (e) => {
-    e.preventDefault();
-    const onT = parseFloat(tempThresholds.onThreshold);
-    const offT = parseFloat(tempThresholds.offThreshold);
-
-    if (isNaN(onT) || isNaN(offT)) {
-      alert("Please provide valid temperature numbers.");
-      return;
-    }
-    if (onT >= offT) {
-      alert("Validation Error: Heater ON threshold (" + onT + "°C) must be lower than Heater OFF threshold (" + offT + "°C) to maintain proper hysteresis.");
-      return;
-    }
-
-    try {
-      await heaterAPI.updateSettings({
-        farmId: Number(farmId || 1),
-        onThreshold: onT,
-        offThreshold: offT,
-      });
-      setShowSettingsModal(false);
-      fetchHeaterStatus();
-      alert("Hysteresis thresholds updated successfully!");
-    } catch (err) {
-      alert(err.response?.data?.message || "Failed to update thresholds");
-    }
-  };
 
   // Save Profile
   const handleSaveProfile = async (e) => {
@@ -633,31 +604,25 @@ const Dborad = () => {
                 </div>
               </div>
 
-              {/* Card 2: Hysteresis Thresholds */}
+              {/* Card 2: Temperature Rule */}
               <div className="p-4 bg-[#dcedc8] rounded-2xl border border-[#c5e1a5] flex flex-col justify-between">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs uppercase tracking-wider font-semibold text-[#558b2f]">
-                    Automatic Thresholds
-                  </span>
-                  <button
-                    onClick={() => setShowSettingsModal(true)}
-                    className="text-[11px] text-[#2e7d32] font-bold hover:underline"
-                  >
-                    Edit
-                  </button>
-                </div>
+                <span className="text-xs uppercase tracking-wider font-semibold text-[#558b2f]">
+                  Temperature Rule
+                </span>
                 <div className="my-2 space-y-1">
                   <div className="text-xs flex justify-between font-semibold">
-                    <span>ON Below:</span>
-                    <span className="text-red-700 font-bold">{heaterState.onThreshold ?? 30.0}°C</span>
+                    <span>Auto Threshold:</span>
+                    <span className="text-[#2e7d32] font-black text-sm">35.0°C</span>
                   </div>
-                  <div className="text-xs flex justify-between font-semibold">
-                    <span>OFF Above:</span>
-                    <span className="text-blue-700 font-bold">{heaterState.offThreshold ?? 35.0}°C</span>
+                  <div className="text-xs text-[#33691e]">
+                    • Above 35.0°C: <span className="font-bold text-red-600">HEATER ON</span>
+                  </div>
+                  <div className="text-xs text-[#33691e]">
+                    • 35.0°C or below: <span className="font-bold text-gray-700">HEATER OFF</span>
                   </div>
                 </div>
                 <div className="text-[10px] text-[#558b2f] italic">
-                  Hysteresis Band: {heaterState.onThreshold ?? 30.0}°C - {heaterState.offThreshold ?? 35.0}°C
+                  Automatic hardware threshold
                 </div>
               </div>
 
@@ -926,12 +891,6 @@ const Dborad = () => {
                     >
                       {isHeaterOn ? "Heater ON" : "Heater OFF"}
                     </span>
-                    <button
-                      onClick={() => setShowSettingsModal(true)}
-                      className="text-xs text-[#558b2f] hover:underline font-semibold"
-                    >
-                      Thresholds
-                    </button>
                   </div>
                 </motion.div>
               ))
@@ -1015,91 +974,7 @@ const Dborad = () => {
         )}
       </AnimatePresence>
 
-      {/* ========================================================================= */}
-      {/* THRESHOLD SETTINGS MODAL                                                  */}
-      {/* ========================================================================= */}
-      <AnimatePresence>
-        {showSettingsModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-            <motion.div
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-[#f0f4c3] text-[#33691e] rounded-3xl p-6 md:p-8 max-w-md w-full shadow-2xl border-2 border-[#cddc39]"
-            >
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-xl font-bold">Configure Hysteresis Thresholds</h3>
-                <button
-                  onClick={() => setShowSettingsModal(false)}
-                  className="text-gray-500 hover:text-gray-800 text-2xl font-bold"
-                >
-                  &times;
-                </button>
-              </div>
 
-              <p className="text-xs text-[#558b2f] mb-4">
-                Set temperatures at which the heater automatically switches. ON threshold must be strictly lower than OFF threshold.
-              </p>
-
-              <form onSubmit={handleSaveThresholds} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider mb-1">
-                    Heater ON Threshold (°C)
-                  </label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    value={tempThresholds.onThreshold}
-                    onChange={(e) =>
-                      setTempThresholds({ ...tempThresholds, onThreshold: e.target.value })
-                    }
-                    className="w-full px-3 py-2 rounded-lg border border-[#cddc39] bg-white text-[#33691e] font-bold focus:outline-none focus:ring-2 focus:ring-[#33691e]"
-                    required
-                  />
-                  <span className="text-[11px] text-[#558b2f]">Heater turns ON when temp falls below this value.</span>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider mb-1">
-                    Heater OFF Threshold (°C)
-                  </label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    value={tempThresholds.offThreshold}
-                    onChange={(e) =>
-                      setTempThresholds({ ...tempThresholds, offThreshold: e.target.value })
-                    }
-                    className="w-full px-3 py-2 rounded-lg border border-[#cddc39] bg-white text-[#33691e] font-bold focus:outline-none focus:ring-2 focus:ring-[#33691e]"
-                    required
-                  />
-                  <span className="text-[11px] text-[#558b2f]">Heater turns OFF when temp rises above this value.</span>
-                </div>
-
-                <div className="p-3 bg-[#dcedc8] rounded-xl text-xs text-[#33691e]">
-                  🛡️ <strong>Hysteresis Safety:</strong> Temperature between {tempThresholds.onThreshold || 30}°C and {tempThresholds.offThreshold || 35}°C keeps the previous heater state.
-                </div>
-
-                <div className="flex justify-end gap-3 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowSettingsModal(false)}
-                    className="px-4 py-2 rounded-lg border border-[#cddc39] text-sm font-semibold hover:bg-[#dcedc8]"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="px-5 py-2 rounded-lg bg-[#33691e] text-[#f0f4c3] text-sm font-bold shadow hover:bg-[#2e7d32]"
-                  >
-                    Save Thresholds
-                  </button>
-                </div>
-              </form>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
     </div>
   );
 };
