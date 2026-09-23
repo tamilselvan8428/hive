@@ -88,54 +88,54 @@ public class HeaterControlServiceTest {
     }
 
     @Test
-    @DisplayName("TEST 1: Temperature 28°C in AUTO mode turns heater ON and sends 1 SMS to User A registered number")
-    void test1_tempLow_heaterOn_smsSent() {
-        HeaterState result = heaterControlService.processTelemetry(1L, 28.0, 60.0, "AUTO", null, null);
+    @DisplayName("TEST 1: Temperature 38°C in AUTO mode turns heater ON and sends 1 SMS to User A registered number")
+    void test1_tempHigh_heaterOn_smsSent() {
+        HeaterState result = heaterControlService.processTelemetry(1L, 38.0, 60.0, "AUTO", null, null);
 
         assertEquals("ON", result.getHeaterStatus());
         verify(smsService, times(1)).sendHeaterAlert(
                 eq("+919876543210"),
-                eq(28.0),
+                eq(38.0),
                 eq("ON"),
-                eq("AUTO"),
-                contains("below 30.0°C")
-        );
-    }
-
-    @Test
-    @DisplayName("TEST 2: Temperature 29°C when already ON keeps heater ON and sends NO SMS (deduplication)")
-    void test2_temp29_alreadyOn_noSms() {
-        stateA.setHeaterStatus("ON"); // Already ON
-
-        HeaterState result = heaterControlService.processTelemetry(1L, 29.0, 60.0, "AUTO", null, null);
-
-        assertEquals("ON", result.getHeaterStatus());
-        verify(smsService, never()).sendHeaterAlert(anyString(), any(), anyString(), anyString(), anyString());
-    }
-
-    @Test
-    @DisplayName("TEST 3: Temperature 36°C turns heater OFF and sends 1 SMS to User A")
-    void test3_tempHigh_heaterOff_smsSent() {
-        stateA.setHeaterStatus("ON");
-
-        HeaterState result = heaterControlService.processTelemetry(1L, 36.0, 60.0, "AUTO", null, null);
-
-        assertEquals("OFF", result.getHeaterStatus());
-        verify(smsService, times(1)).sendHeaterAlert(
-                eq("+919876543210"),
-                eq(36.0),
-                eq("OFF"),
                 eq("AUTO"),
                 contains("above 35.0°C")
         );
     }
 
     @Test
-    @DisplayName("TEST 4: Temperature 34°C within hysteresis band when already OFF keeps heater OFF and sends NO SMS")
-    void test4_hysteresisBand_alreadyOff_remainsOff() {
+    @DisplayName("TEST 2: Temperature 39°C when already ON keeps heater ON and sends NO SMS (deduplication)")
+    void test2_temp39_alreadyOn_noSms() {
+        stateA.setHeaterStatus("ON"); // Already ON
+
+        HeaterState result = heaterControlService.processTelemetry(1L, 39.0, 60.0, "AUTO", null, null);
+
+        assertEquals("ON", result.getHeaterStatus());
+        verify(smsService, never()).sendHeaterAlert(anyString(), any(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("TEST 3: Temperature 28°C turns heater OFF and sends 1 SMS to User A")
+    void test3_tempLow_heaterOff_smsSent() {
+        stateA.setHeaterStatus("ON");
+
+        HeaterState result = heaterControlService.processTelemetry(1L, 28.0, 60.0, "AUTO", null, null);
+
+        assertEquals("OFF", result.getHeaterStatus());
+        verify(smsService, times(1)).sendHeaterAlert(
+                eq("+919876543210"),
+                eq(28.0),
+                eq("OFF"),
+                eq("AUTO"),
+                contains("<= 35.0°C")
+        );
+    }
+
+    @Test
+    @DisplayName("TEST 4: Temperature 27°C when already OFF keeps heater OFF and sends NO SMS")
+    void test4_tempLow_alreadyOff_remainsOff() {
         stateA.setHeaterStatus("OFF"); // Already OFF
 
-        HeaterState result = heaterControlService.processTelemetry(1L, 34.0, 60.0, "AUTO", null, null);
+        HeaterState result = heaterControlService.processTelemetry(1L, 27.0, 60.0, "AUTO", null, null);
 
         assertEquals("OFF", result.getHeaterStatus());
         verify(smsService, never()).sendHeaterAlert(anyString(), any(), anyString(), anyString(), anyString());
@@ -155,7 +155,7 @@ public class HeaterControlServiceTest {
                 any(),
                 eq("ON"),
                 eq("MANUAL"),
-                eq("Manual control")
+                contains("Manual Heater ON")
         );
     }
 
@@ -172,11 +172,11 @@ public class HeaterControlServiceTest {
     }
 
     @Test
-    @DisplayName("TEST 7: Switching MANUAL to AUTO at 28°C immediately evaluates temperature and sends 1 SMS")
+    @DisplayName("TEST 7: Switching MANUAL to AUTO at 38°C immediately evaluates temperature and sends 1 SMS")
     void test7_switchManualToAuto_evaluatesImmediately() {
         stateA.setMode("MANUAL");
         stateA.setHeaterStatus("OFF");
-        stateA.setCurrentTemperature(28.0);
+        stateA.setCurrentTemperature(38.0);
 
         HeaterState result = heaterControlService.setMode(1L, "AUTO");
 
@@ -184,10 +184,10 @@ public class HeaterControlServiceTest {
         assertEquals("ON", result.getHeaterStatus());
         verify(smsService, times(1)).sendHeaterAlert(
                 eq("+919876543210"),
-                eq(28.0),
+                eq(38.0),
                 eq("ON"),
                 eq("AUTO"),
-                contains("below 30.0°C")
+                contains("> 35.0")
         );
     }
 
@@ -201,7 +201,7 @@ public class HeaterControlServiceTest {
         lenient().when(heaterStateRepository.findByFarmId(2L)).thenReturn(Optional.of(stateB));
 
         // User A's hive changes state:
-        heaterControlService.processTelemetry(1L, 27.0, 50.0, "AUTO", null, null);
+        heaterControlService.processTelemetry(1L, 38.0, 50.0, "AUTO", null, null);
 
         // Verify sent to User A only
         verify(smsService, times(1)).sendHeaterAlert(
@@ -220,7 +220,7 @@ public class HeaterControlServiceTest {
         );
 
         // Now User B's hive changes state:
-        heaterControlService.processTelemetry(2L, 26.0, 50.0, "AUTO", null, null);
+        heaterControlService.processTelemetry(2L, 39.0, 50.0, "AUTO", null, null);
 
         // Verify User B receives alert for User B's hive
         verify(smsService, times(1)).sendHeaterAlert(
@@ -238,7 +238,7 @@ public class HeaterControlServiceTest {
         // User changes phone number in profile
         userA.setPhoneNumber("+919812345678");
 
-        heaterControlService.processTelemetry(1L, 26.0, 50.0, "AUTO", null, null);
+        heaterControlService.processTelemetry(1L, 38.0, 50.0, "AUTO", null, null);
 
         verify(smsService, times(1)).sendHeaterAlert(
                 eq("+919812345678"), // Updated phone number!
@@ -255,12 +255,24 @@ public class HeaterControlServiceTest {
         when(smsService.sendHeaterAlert(anyString(), any(), anyString(), anyString(), anyString()))
                 .thenReturn(new SmsService.SmsResult(false, "FAILED", "SMS Gateway error", "+91 ******3210"));
 
-        HeaterState result = heaterControlService.processTelemetry(1L, 25.0, 50.0, "AUTO", null, null);
+        HeaterState result = heaterControlService.processTelemetry(1L, 38.0, 50.0, "AUTO", null, null);
 
         // Heater state still successfully transitions to ON
         assertEquals("ON", result.getHeaterStatus());
         // Status recorded as FAILED without throwing exception
         assertEquals("FAILED", result.getLastSmsStatus());
+    }
+
+    @Test
+    @DisplayName("TEST 11: In MANUAL mode, when heater is OFF, telemetry with high temperature (40°C) does NOT turn heater ON")
+    void test11_manualModeOff_highTemp_remainsOff() {
+        stateA.setMode("MANUAL");
+        stateA.setHeaterStatus("OFF");
+
+        HeaterState result = heaterControlService.processTelemetry(1L, 40.0, 50.0, "MANUAL", null, null);
+
+        assertEquals("OFF", result.getHeaterStatus(), "Manual OFF must NOT be overwritten by high temperature in MANUAL mode");
+        verify(smsService, never()).sendHeaterAlert(anyString(), any(), anyString(), anyString(), anyString());
     }
 
     @Test
@@ -271,7 +283,7 @@ public class HeaterControlServiceTest {
         HeaterState result = heaterControlService.processTelemetry(1L, Double.NaN, 50.0, "AUTO", null, null);
 
         assertEquals("OFF", result.getHeaterStatus());
-        assertEquals("Temperature sensor unavailable", result.getLastReason());
+        assertEquals("Temperature sensor unavailable (Safety OFF)", result.getLastReason());
     }
 
     @Test

@@ -13,6 +13,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.scheduling.annotation.Scheduled;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -21,6 +22,8 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Slf4j
 @Service
@@ -36,6 +39,9 @@ public class HeaterControlService {
 
     @Value("${thingspeak.write.key:A0B9TJ5N4L8R72ZE}")
     private String thingspeakWriteKey;
+
+    @Value("${thingspeak.read.key:C4SNIR7EP4W21360}")
+    private String thingspeakReadKey;
 
     @Value("${thingspeak.channel.id:3126283}")
     private String thingspeakChannelId;
@@ -83,38 +89,32 @@ public class HeaterControlService {
         String reason = state.getLastReason();
 
         if ("AUTO".equalsIgnoreCase(state.getMode())) {
-            // Requirement 8: Sensor Failure Safety
+            // Sensor Failure Safety
             if (temperature == null || Double.isNaN(temperature)) {
                 targetStatus = "OFF";
-                reason = "Temperature sensor unavailable";
+                reason = "Temperature sensor unavailable (Safety OFF)";
                 log.warn("[AUTO HEATER] Farm {}: Sensor reading invalid/NaN. Defaulting heater to OFF for safety.", farmId);
             } else {
-                double onLimit = state.getOnThreshold() != null ? state.getOnThreshold() : 30.0;
-                double offLimit = state.getOffThreshold() != null ? state.getOffThreshold() : 35.0;
-
-                // Requirement 2: Temperature-based automatic heater control with hysteresis
-                if (temperature < onLimit) {
+                // Rule: If temperature > 35.0°C -> ON, else -> OFF
+                if (temperature > 35.0) {
                     targetStatus = "ON";
-                    reason = String.format("Temperature below %.1f°C", onLimit);
-                } else if (temperature > offLimit) {
-                    targetStatus = "OFF";
-                    reason = String.format("Temperature above %.1f°C", offLimit);
+                    reason = String.format("Temperature (%.1f°C) above 35.0°C -> Heater ON", temperature);
                 } else {
-                    // 30°C <= temp <= 35°C: Keep previous state
-                    targetStatus = previousStatus;
-                    reason = String.format("Temperature (%.1f°C) within hysteresis band (%.1f°C - %.1f°C). State maintained.",
-                            temperature, onLimit, offLimit);
+                    targetStatus = "OFF";
+                    reason = String.format("Temperature (%.1f°C) <= 35.0°C -> Heater OFF", temperature);
                 }
             }
         } else {
-            // MANUAL Mode
-            if (reportedHeater != null) {
-                targetStatus = reportedHeater ? "ON" : "OFF";
-                reason = clientReason != null ? clientReason : "Manual control";
-            }
+            // MANUAL Mode: Keep current heaterStatus! DO NOT overwrite based on temperature!
+            targetStatus = previousStatus;
+            reason = "MANUAL mode active. Maintained " + previousStatus;
         }
 
+        boolean stateChanged = !previousStatus.equalsIgnoreCase(targetStatus);
         applyStateChange(state, farmId, previousStatus, targetStatus, reason, temperature);
+        if (stateChanged && "AUTO".equalsIgnoreCase(state.getMode())) {
+            syncThingSpeak(farmId, targetStatus, "AUTO");
+        }
         return heaterStateRepository.save(state);
     }
 
@@ -127,7 +127,6 @@ public class HeaterControlService {
         }
 
         HeaterState state = getOrCreateHeaterState(farmId);
-        String previousMode = state.getMode();
         String formattedMode = newMode.toUpperCase();
         state.setMode(formattedMode);
         state.setUpdatedAt(LocalDateTime.now());
@@ -137,25 +136,17 @@ public class HeaterControlService {
         String reason = "Switched to " + formattedMode + " mode";
 
         if ("AUTO".equalsIgnoreCase(formattedMode)) {
-            // Requirement 22: Immediately evaluate current temperature when switching MANUAL -> AUTO
             Double temp = state.getCurrentTemperature();
             if (temp != null && !Double.isNaN(temp)) {
-                double onLimit = state.getOnThreshold() != null ? state.getOnThreshold() : 30.0;
-                double offLimit = state.getOffThreshold() != null ? state.getOffThreshold() : 35.0;
-
-                if (temp < onLimit) {
+                if (temp > 35.0) {
                     targetStatus = "ON";
-                    reason = String.format("Switched to AUTO: Temperature (%.1f°C) below %.1f°C", temp, onLimit);
-                } else if (temp > offLimit) {
-                    targetStatus = "OFF";
-                    reason = String.format("Switched to AUTO: Temperature (%.1f°C) above %.1f°C", temp, offLimit);
+                    reason = String.format("Switched to AUTO: Temperature (%.1f°C) > 35.0°C -> Heater ON", temp);
                 } else {
-                    targetStatus = previousStatus;
-                    reason = String.format("Switched to AUTO: Temperature (%.1f°C) within hysteresis band. Maintained %s.", temp, previousStatus);
+                    targetStatus = "OFF";
+                    reason = String.format("Switched to AUTO: Temperature (%.1f°C) <= 35.0°C -> Heater OFF", temp);
                 }
             }
         } else {
-            // Requirement 21: When switching AUTO -> MANUAL, preserve current heater state
             reason = "Switched to MANUAL mode. Maintained current state " + previousStatus;
         }
 
@@ -169,18 +160,73 @@ public class HeaterControlService {
      */
     public synchronized HeaterState setManualHeater(Long farmId, boolean turnOn) {
         HeaterState state = getOrCreateHeaterState(farmId);
-
-        if (!"MANUAL".equalsIgnoreCase(state.getMode())) {
-            throw new IllegalStateException("Manual commands are only permitted in MANUAL mode. Current mode is " + state.getMode());
-        }
+        state.setMode("MANUAL");
 
         String previousStatus = state.getHeaterStatus() != null ? state.getHeaterStatus().toUpperCase() : "OFF";
         String targetStatus = turnOn ? "ON" : "OFF";
-        String reason = "Manual control";
+        String reason = turnOn ? "Manual Heater ON command by user" : "Manual Heater OFF command by user";
 
         applyStateChange(state, farmId, previousStatus, targetStatus, reason, state.getCurrentTemperature());
         syncThingSpeak(farmId, targetStatus, "MANUAL");
         return heaterStateRepository.save(state);
+    }
+
+    /**
+     * Polls ThingSpeak telemetry feed every 10 seconds.
+     * Evaluates AUTO mode decision in backend: if temp > 35.0°C -> ON, else -> OFF.
+     * In MANUAL mode: respects user manual command, does NOT overwrite with temperature!
+     */
+    @Scheduled(fixedDelay = 10000)
+    public void pollThingSpeakTelemetry() {
+        if (thingspeakChannelId == null || thingspeakChannelId.isBlank()) return;
+
+        try {
+            String readUrl = String.format(
+                    "https://api.thingspeak.com/channels/%s/feeds/last.json?api_key=%s",
+                    thingspeakChannelId,
+                    (thingspeakReadKey != null && !thingspeakReadKey.isBlank()) ? thingspeakReadKey : ""
+            );
+
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(readUrl))
+                    .timeout(Duration.ofSeconds(5))
+                    .GET()
+                    .build();
+
+            HttpResponse<String> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() == 200 && resp.body() != null && !resp.body().isBlank()) {
+                String body = resp.body();
+                String tempStr = extractJsonField(body, "field2");
+                if (tempStr != null && !tempStr.equalsIgnoreCase("nan")) {
+                    try {
+                        double temp = Double.parseDouble(tempStr);
+                        Double hum = null;
+                        String humStr = extractJsonField(body, "field3");
+                        if (humStr != null && !humStr.equalsIgnoreCase("nan")) {
+                            try { hum = Double.parseDouble(humStr); } catch (Exception ignored) {}
+                        }
+                        Long farmId = 1L;
+                        String farmStr = extractJsonField(body, "field1");
+                        if (farmStr != null) {
+                            try { farmId = Long.parseLong(farmStr); } catch (Exception ignored) {}
+                        }
+                        processTelemetry(farmId, temp, hum, null, null, "ThingSpeak Telemetry Sync");
+                    } catch (NumberFormatException ignored) {}
+                }
+            }
+        } catch (Exception e) {
+            log.debug("[THINGSPEAK POLL] Error polling feed: {}", e.getMessage());
+        }
+    }
+
+    private String extractJsonField(String json, String fieldName) {
+        if (json == null) return null;
+        Matcher matcher = Pattern.compile("\"" + fieldName + "\"\\s*:\\s*\"?([^\"\\,\\}]+)\"?").matcher(json);
+        if (matcher.find()) {
+            String val = matcher.group(1).trim();
+            return "null".equalsIgnoreCase(val) ? null : val;
+        }
+        return null;
     }
 
     /**

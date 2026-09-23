@@ -77,16 +77,8 @@ HX711 scale;
 // Change this value according to your load-cell calibration
 float calibrationFactor = -7050.0;
 
-// =====================================================
-// Temperature Control
-// =====================================================
-
-// AUTO MODE:
-//
-// Temperature > 35°C  -> LED/Relay ON
-// Temperature <= 35°C -> LED/Relay OFF
-
-const float TEMPERATURE_THRESHOLD = 35.0;
+// Decision logic (AUTO threshold >35C and MANUAL overrides) is managed by the Spring Boot Backend.
+// ESP32 executes commands sent by the backend via ThingSpeak.
 
 // =====================================================
 // Control Mode
@@ -137,7 +129,6 @@ const unsigned long sensorReadInterval = 15000;
 // =====================================================
 
 void setHardwareRelay(bool state);
-void applyHeaterLogic(float temp);
 void readAndUploadSensors();
 void uploadToThingSpeak();
 void fetchControlCommands();
@@ -260,10 +251,8 @@ void setup() {
   }
 
   Serial.println("=================================================");
-  Serial.println("SYSTEM READY");
-  Serial.println("AUTO MODE:");
-  Serial.println("Temperature > 35C  -> LED ON");
-  Serial.println("Temperature <= 35C -> LED OFF");
+  Serial.println("SYSTEM READY - Backend Controlled Architecture");
+  Serial.println("Decision logic: Spring Boot Backend -> ESP32 Actuation");
   Serial.println("=================================================");
 }
 
@@ -289,188 +278,6 @@ void setHardwareRelay(bool state) {
   }
 }
 
-// =====================================================
-// TEMPERATURE CONTROL
-// =====================================================
-
-void applyHeaterLogic(float temp) {
-
-  bool targetState = false;
-
-  String reason = "";
-
-  // -------------------------------------------------
-  // AUTO MODE
-  // -------------------------------------------------
-
-  if (controlMode == "AUTO") {
-
-    // DHT11 failure
-    if (isnan(temp)) {
-
-      targetState = false;
-
-      reason =
-        "DHT11 unavailable - Safety OFF";
-
-      Serial.println(
-        "[SAFETY] DHT11 error! LED forced OFF."
-      );
-    }
-
-    // Temperature ABOVE 35°C
-    else if (temp > TEMPERATURE_THRESHOLD) {
-
-      targetState = true;
-
-      reason =
-        "Temperature above 35C";
-
-      Serial.print(
-        "[AUTO] Temperature = "
-      );
-
-      Serial.print(
-        temp,
-        1
-      );
-
-      Serial.println(
-        "C > 35C -> LED ON"
-      );
-    }
-
-    // Temperature 35°C or below
-    else {
-
-      targetState = false;
-
-      reason =
-        "Temperature 35C or below";
-
-      Serial.print(
-        "[AUTO] Temperature = "
-      );
-
-      Serial.print(
-        temp,
-        1
-      );
-
-      Serial.println(
-        "C <= 35C -> LED OFF"
-      );
-    }
-  }
-
-  // -------------------------------------------------
-  // MANUAL MODE
-  // -------------------------------------------------
-
-  else {
-
-    targetState = manualHeaterCommand;
-
-    reason =
-      "Manual control from ThingSpeak";
-
-    Serial.print(
-      "[MANUAL] Command -> "
-    );
-
-    Serial.println(
-      manualHeaterCommand
-        ? "LED ON"
-        : "LED OFF"
-    );
-  }
-
-  // Save reason
-  currentReason = reason;
-
-  // -------------------------------------------------
-  // Detect State Change
-  // -------------------------------------------------
-
-  bool stateChanged =
-    (!isFirstRun &&
-     targetState != previousBurnerState);
-
-  // -------------------------------------------------
-  // Apply Physical Output
-  // -------------------------------------------------
-
-  burnerState = targetState;
-
-  setHardwareRelay(
-    burnerState
-  );
-
-  // -------------------------------------------------
-  // Serial Status
-  // -------------------------------------------------
-
-  Serial.print(
-    "[LED STATE] "
-  );
-
-  Serial.print(
-    burnerState
-      ? "ON"
-      : "OFF"
-  );
-
-  Serial.print(
-    " | MODE: "
-  );
-
-  Serial.print(
-    controlMode
-  );
-
-  Serial.print(
-    " | REASON: "
-  );
-
-  Serial.println(
-    currentReason
-  );
-
-  // -------------------------------------------------
-  // State Change Message
-  // -------------------------------------------------
-
-  if (stateChanged || isFirstRun) {
-
-    if (stateChanged) {
-
-      Serial.print(
-        ">>> STATE CHANGE: "
-      );
-
-      Serial.print(
-        previousBurnerState
-          ? "ON"
-          : "OFF"
-      );
-
-      Serial.print(
-        " -> "
-      );
-
-      Serial.println(
-        burnerState
-          ? "ON"
-          : "OFF"
-      );
-    }
-
-    previousBurnerState =
-      burnerState;
-
-    isFirstRun = false;
-  }
-}
 
 // =====================================================
 // SENSOR READING
@@ -640,13 +447,6 @@ void readAndUploadSensors() {
     "======================================"
   );
 
-  // =================================================
-  // 4. APPLY TEMPERATURE CONTROL
-  // =================================================
-
-  applyHeaterLogic(
-    temperature
-  );
 
   // =================================================
   // 5. UPLOAD TO THINGSPEAK
@@ -981,37 +781,32 @@ void fetchControlCommands() {
         }
 
         // ===============================================
-        // MANUAL MODE
+        // APPLY BACKEND COMMAND (FIELD 6 / FIELD 8)
         // ===============================================
+        bool cmdFound = false;
+        bool newCmd = false;
 
-        if (
-          controlMode == "MANUAL"
-        ) {
+        if (doc.containsKey("field6") && !doc["field6"].isNull()) {
+          const char* f6 = doc["field6"];
+          newCmd = (strcmp(f6, "1") == 0);
+          cmdFound = true;
+        } else if (doc.containsKey("field8") && !doc["field8"].isNull()) {
+          const char* f8 = doc["field8"];
+          newCmd = (strcmp(f8, "1") == 0);
+          cmdFound = true;
+        }
 
-          if (
-            burnerState !=
-            manualHeaterCommand
-          ) {
+        if (cmdFound) {
+          if (burnerState != newCmd || isFirstRun) {
+            burnerState = newCmd;
+            setHardwareRelay(burnerState);
+            previousBurnerState = burnerState;
+            isFirstRun = false;
 
-            burnerState =
-              manualHeaterCommand;
-
-            setHardwareRelay(
-              burnerState
-            );
-
-            previousBurnerState =
-              burnerState;
-
-            Serial.print(
-              "[MANUAL OVERRIDE] LED: "
-            );
-
-            Serial.println(
-              burnerState
-                ? "ON"
-                : "OFF"
-            );
+            Serial.print("[BACKEND COMMAND] Mode: ");
+            Serial.print(controlMode);
+            Serial.print(" | LED / Relay: ");
+            Serial.println(burnerState ? "ON" : "OFF");
           }
         }
 
@@ -1091,4 +886,4 @@ float extractPH(String data) {
   }
 
   return value;
-}
+} 
