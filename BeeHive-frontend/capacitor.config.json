@@ -1,0 +1,20 @@
+{
+  "appId": "com.smartbee.app",
+  "appName": "SmartBee",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true,
+    "allowNavigation": ["*"]
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    },
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_icon_config_sample",
+      "iconColor": "#33691e",
+      "sound": "beep.wav"
+    }
+  }
+}
