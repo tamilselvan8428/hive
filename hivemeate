@@ -93,7 +93,7 @@ bool burnerState = false;
 
 // Previous state
 bool previousBurnerState = false;
-
+ 
 // First run flag
 bool isFirstRun = true;
 
