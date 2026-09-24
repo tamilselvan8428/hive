@@ -95,13 +95,14 @@ public class HeaterControlService {
                 reason = "Temperature sensor unavailable (Safety OFF)";
                 log.warn("[AUTO HEATER] Farm {}: Sensor reading invalid/NaN. Defaulting heater to OFF for safety.", farmId);
             } else {
-                // Rule: If temperature > 35.0°C -> ON, else -> OFF
-                if (temperature > 35.0) {
+                double threshold = state.getOffThreshold() != null ? state.getOffThreshold() : 35.0;
+                // Rule: If temperature > threshold -> ON, else -> OFF
+                if (temperature > threshold) {
                     targetStatus = "ON";
-                    reason = String.format("Temperature (%.1f°C) above 35.0°C -> Heater ON", temperature);
+                    reason = String.format("Temperature (%.1f°C) above %.1f°C -> Heater ON", temperature, threshold);
                 } else {
                     targetStatus = "OFF";
-                    reason = String.format("Temperature (%.1f°C) <= 35.0°C -> Heater OFF", temperature);
+                    reason = String.format("Temperature (%.1f°C) <= %.1f°C -> Heater OFF", temperature, threshold);
                 }
             }
         } else {
@@ -138,12 +139,13 @@ public class HeaterControlService {
         if ("AUTO".equalsIgnoreCase(formattedMode)) {
             Double temp = state.getCurrentTemperature();
             if (temp != null && !Double.isNaN(temp)) {
-                if (temp > 35.0) {
+                double threshold = state.getOffThreshold() != null ? state.getOffThreshold() : 35.0;
+                if (temp > threshold) {
                     targetStatus = "ON";
-                    reason = String.format("Switched to AUTO: Temperature (%.1f°C) > 35.0°C -> Heater ON", temp);
+                    reason = String.format("Switched to AUTO: Temperature (%.1f°C) > %.1f°C -> Heater ON", temp, threshold);
                 } else {
                     targetStatus = "OFF";
-                    reason = String.format("Switched to AUTO: Temperature (%.1f°C) <= 35.0°C -> Heater OFF", temp);
+                    reason = String.format("Switched to AUTO: Temperature (%.1f°C) <= %.1f°C -> Heater OFF", temp, threshold);
                 }
             }
         } else {
@@ -230,14 +232,20 @@ public class HeaterControlService {
     }
 
     /**
-     * Updates hysteresis thresholds.
+     * Updates temperature thresholds dynamically.
      */
     public synchronized HeaterState updateThresholds(Long farmId, Double onThreshold, Double offThreshold) {
-        if (onThreshold == null || offThreshold == null) {
-            throw new IllegalArgumentException("Both onThreshold and offThreshold are required.");
+        if (onThreshold == null && offThreshold == null) {
+            throw new IllegalArgumentException("Threshold temperature value is required.");
         }
-        if (onThreshold >= offThreshold) {
-            throw new IllegalArgumentException("Heater ON threshold (" + onThreshold + "°C) must be lower than Heater OFF threshold (" + offThreshold + "°C).");
+        if (offThreshold == null) {
+            offThreshold = onThreshold;
+        }
+        if (onThreshold == null) {
+            onThreshold = offThreshold;
+        }
+        if (onThreshold > offThreshold) {
+            throw new IllegalArgumentException("Heater ON threshold (" + onThreshold + "°C) must be lower than or equal to Heater OFF threshold (" + offThreshold + "°C).");
         }
 
         HeaterState state = getOrCreateHeaterState(farmId);
@@ -247,7 +255,7 @@ public class HeaterControlService {
 
         // Re-evaluate current temperature if in AUTO mode
         if ("AUTO".equalsIgnoreCase(state.getMode()) && state.getCurrentTemperature() != null) {
-            return processTelemetry(farmId, state.getCurrentTemperature(), state.getCurrentHumidity(), "AUTO", null, "Thresholds updated");
+            return processTelemetry(farmId, state.getCurrentTemperature(), state.getCurrentHumidity(), "AUTO", null, "Threshold updated to " + offThreshold + "°C");
         }
 
         return heaterStateRepository.save(state);

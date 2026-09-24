@@ -5,6 +5,8 @@ import lombok.Data;
 @Data
 public class HeaterSettingsRequest {
     private Long farmId;
+    private Double threshold;
     private Double onThreshold;
     private Double offThreshold;
 }
+

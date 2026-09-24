@@ -8,8 +8,8 @@
 // WiFi Settings
 // =====================================================
 
-const char* ssid = "Barath";
-const char* password = "barath123";
+const char* ssid = "Sharan";
+const char* password = "123456789";
 
 // =====================================================
 // ThingSpeak Settings

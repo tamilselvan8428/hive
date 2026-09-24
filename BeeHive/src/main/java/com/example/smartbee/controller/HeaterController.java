@@ -172,13 +172,26 @@ public class HeaterController {
                 return ResponseEntity.badRequest().body(Map.of("message", "farmId is required"));
             }
 
-            HeaterState state = heaterControlService.updateThresholds(farmId, req.getOnThreshold(), req.getOffThreshold());
+            Double targetThreshold = req.getThreshold();
+            if (targetThreshold == null) {
+                targetThreshold = req.getOffThreshold();
+            }
+            if (targetThreshold == null) {
+                targetThreshold = req.getOnThreshold();
+            }
+
+            Double onT = req.getOnThreshold() != null ? req.getOnThreshold() : targetThreshold;
+            Double offT = req.getOffThreshold() != null ? req.getOffThreshold() : targetThreshold;
+
+            HeaterState state = heaterControlService.updateThresholds(farmId, onT, offT);
             return ResponseEntity.ok(Map.of(
                     "success", true,
                     "farmId", state.getFarmId(),
+                    "threshold", state.getOffThreshold(),
                     "onThreshold", state.getOnThreshold(),
                     "offThreshold", state.getOffThreshold(),
-                    "message", "Thresholds updated successfully"
+                    "heaterStatus", state.getHeaterStatus(),
+                    "message", "Threshold updated successfully to " + state.getOffThreshold() + "°C"
             ));
 
         } catch (SecurityException e) {

@@ -287,10 +287,33 @@ public class HeaterControlServiceTest {
     }
 
     @Test
-    @DisplayName("SETTINGS TEST: Invalid thresholds where ON >= OFF are rejected")
+    @DisplayName("SETTINGS TEST: Invalid thresholds where ON > OFF are rejected")
     void test_invalidThresholds_rejected() {
         assertThrows(IllegalArgumentException.class, () -> {
             heaterControlService.updateThresholds(1L, 35.0, 30.0);
         });
     }
+
+    @Test
+    @DisplayName("DYNAMIC THRESHOLD TEST: Setting threshold to 32°C causes 33°C to trigger ON and 31°C to turn OFF")
+    void test_dynamicThreshold_updatesAndTriggersCorrectly() {
+        stateA.setMode("AUTO");
+        stateA.setHeaterStatus("OFF");
+        stateA.setCurrentTemperature(31.0);
+
+        // Update threshold dynamically to 32.0°C
+        HeaterState updated = heaterControlService.updateThresholds(1L, 32.0, 32.0);
+        assertEquals(32.0, updated.getOffThreshold());
+
+        // At 33.0°C (above 32°C), heater should turn ON
+        HeaterState onResult = heaterControlService.processTelemetry(1L, 33.0, 50.0, "AUTO", null, null);
+        assertEquals("ON", onResult.getHeaterStatus());
+        assertTrue(onResult.getLastReason().contains("above 32.0°C"));
+
+        // At 31.0°C (below 32°C), heater should turn OFF
+        HeaterState offResult = heaterControlService.processTelemetry(1L, 31.0, 50.0, "AUTO", null, null);
+        assertEquals("OFF", offResult.getHeaterStatus());
+        assertTrue(offResult.getLastReason().contains("<= 32.0°C"));
+    }
 }
+

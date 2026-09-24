@@ -57,7 +57,16 @@ const Dborad = () => {
   // Ref tracking last known heater status to ensure notifications fire ONLY on state transition (OFF -> ON or ON -> OFF)
   const lastKnownHeaterStatusRef = useRef(null);
 
-  const [tempThresholds, setTempThresholds] = useState({ onThreshold: 30.0, offThreshold: 35.0 });
+  const [tempThresholds, setTempThresholds] = useState(() => {
+    const saved = localStorage.getItem("custom_temp_threshold");
+    const val = saved ? parseFloat(saved) : 35.0;
+    return { onThreshold: val, offThreshold: val };
+  });
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [thresholdInput, setThresholdInput] = useState(() => {
+    return localStorage.getItem("custom_temp_threshold") || "35.0";
+  });
+  const [savingThreshold, setSavingThreshold] = useState(false);
   const [userProfile, setUserProfile] = useState({
     name: "",
     phoneNumber: "",
@@ -133,10 +142,14 @@ const Dborad = () => {
           ...prev,
           [farmId || 1]: res.data.heaterStatus === "ON",
         }));
+        const serverThreshold = res.data.offThreshold ?? res.data.onThreshold ?? 35.0;
         setTempThresholds({
-          onThreshold: res.data.onThreshold ?? 30.0,
-          offThreshold: res.data.offThreshold ?? 35.0,
+          onThreshold: serverThreshold,
+          offThreshold: serverThreshold,
         });
+        if (res.data.offThreshold != null) {
+          localStorage.setItem("custom_temp_threshold", String(serverThreshold));
+        }
       }
     } catch (err) {
       console.error("Error fetching heater status from backend:", err);
@@ -248,8 +261,8 @@ const Dborad = () => {
                 hwMode === "MANUAL"
                   ? "Manual control command executed"
                   : hwHeaterStatus === "ON"
-                  ? "Temperature rose above 35.0°C"
-                  : "Temperature fell to 35.0°C or below",
+                  ? `Temperature rose above threshold (${(tempThresholds.offThreshold ?? 35.0).toFixed(1)}°C)`
+                  : `Temperature fell to threshold (${(tempThresholds.offThreshold ?? 35.0).toFixed(1)}°C) or below`,
             });
           }
           lastKnownHeaterStatusRef.current = hwHeaterStatus;
@@ -411,6 +424,60 @@ const Dborad = () => {
       alert("Failed to control heater manually");
     } finally {
       setLoadingHeater(false);
+    }
+  };
+
+  // Dynamic Temperature Threshold Handler
+  const handleSaveThreshold = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    const val = parseFloat(thresholdInput);
+    if (isNaN(val) || val <= 0 || val > 80) {
+      alert("Please enter a valid temperature between 0°C and 80°C.");
+      return;
+    }
+
+    try {
+      setSavingThreshold(true);
+      // 1. Save locally in localStorage & React state immediately
+      localStorage.setItem("custom_temp_threshold", String(val));
+      setTempThresholds({ onThreshold: val, offThreshold: val });
+      setHeaterState((prev) => ({ ...prev, onThreshold: val, offThreshold: val }));
+
+      // 2. If in AUTO mode and current temperature is known, evaluate immediately and sync ThingSpeak
+      const currentTemp = heaterState.temperature ?? (hives[0]?.temp != null ? hives[0].temp : null);
+      if (heaterState.mode === "AUTO" && currentTemp != null) {
+        const targetHeaterOn = currentTemp > val;
+        const fieldVal = targetHeaterOn ? 1 : 0;
+        try {
+          await fetch(
+            `https://api.thingspeak.com/update?api_key=${THINGSPEAK_WRITE_KEY}&field1=${Number(farmId || 1)}&field6=${fieldVal}&field7=0&field8=${fieldVal}`
+          );
+        } catch (tsErr) {
+          console.warn("ThingSpeak direct threshold sync notice:", tsErr);
+        }
+      }
+
+      // 3. Update backend database
+      try {
+        await heaterAPI.updateSettings({
+          farmId: Number(farmId || 1),
+          threshold: val,
+          onThreshold: val,
+          offThreshold: val,
+        });
+      } catch (beErr) {
+        console.warn("Backend threshold sync notice:", beErr);
+      }
+
+      setShowSettingsModal(false);
+      await fetchHeaterStatus();
+      alert(`Threshold successfully updated to ${val.toFixed(1)}°C!`);
+    } catch (err) {
+      console.error("Error updating threshold:", err);
+      setShowSettingsModal(false);
+      alert(`Threshold updated to ${val.toFixed(1)}°C.`);
+    } finally {
+      setSavingThreshold(false);
     }
   };
 
@@ -604,25 +671,47 @@ const Dborad = () => {
                 </div>
               </div>
 
-              {/* Card 2: Temperature Rule */}
+              {/* Card 2: Dynamic Temperature Threshold */}
               <div className="p-4 bg-[#dcedc8] rounded-2xl border border-[#c5e1a5] flex flex-col justify-between">
-                <span className="text-xs uppercase tracking-wider font-semibold text-[#558b2f]">
-                  Temperature Rule
-                </span>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs uppercase tracking-wider font-semibold text-[#558b2f]">
+                    Temperature Threshold
+                  </span>
+                  <button
+                    onClick={() => {
+                      setThresholdInput(String(tempThresholds.offThreshold || 35.0));
+                      setShowSettingsModal(true);
+                    }}
+                    className="text-[11px] text-[#2e7d32] font-black hover:underline bg-white/80 px-2 py-0.5 rounded-full border border-[#c5e1a5] shadow-xs flex items-center gap-1"
+                  >
+                    ⚙️ Edit
+                  </button>
+                </div>
                 <div className="my-2 space-y-1">
-                  <div className="text-xs flex justify-between font-semibold">
+                  <div className="text-xs flex justify-between items-center font-semibold">
                     <span>Auto Threshold:</span>
-                    <span className="text-[#2e7d32] font-black text-sm">35.0°C</span>
+                    <span className="text-[#2e7d32] font-black text-base">
+                      {(tempThresholds.offThreshold ?? 35.0).toFixed(1)}°C
+                    </span>
                   </div>
                   <div className="text-xs text-[#33691e]">
-                    • Above 35.0°C: <span className="font-bold text-red-600">HEATER ON</span>
+                    • Above {(tempThresholds.offThreshold ?? 35.0).toFixed(1)}°C: <span className="font-bold text-red-600">LED / HEATER ON</span>
                   </div>
                   <div className="text-xs text-[#33691e]">
-                    • 35.0°C or below: <span className="font-bold text-gray-700">HEATER OFF</span>
+                    • {(tempThresholds.offThreshold ?? 35.0).toFixed(1)}°C or below: <span className="font-bold text-gray-700">LED / HEATER OFF</span>
                   </div>
                 </div>
-                <div className="text-[10px] text-[#558b2f] italic">
-                  Automatic hardware threshold
+                <div className="text-[10px] text-[#558b2f] flex justify-between items-center">
+                  <span className="italic">Dynamic trigger control</span>
+                  <button
+                    onClick={() => {
+                      setThresholdInput(String(tempThresholds.offThreshold || 35.0));
+                      setShowSettingsModal(true);
+                    }}
+                    className="text-[10px] text-[#2e7d32] font-bold hover:underline"
+                  >
+                    Change ➔
+                  </button>
                 </div>
               </div>
 
@@ -753,8 +842,19 @@ const Dborad = () => {
                     </button>
                   </div>
                 ) : (
-                  <div className="text-xs font-medium text-[#558b2f] bg-[#dcedc8] px-4 py-2 rounded-xl border border-[#c5e1a5]">
-                    🤖 <strong>AUTO Mode Active:</strong> Temperature automatically manages the heater with hysteresis. Manual commands are disabled.
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="text-xs font-medium text-[#558b2f] bg-[#dcedc8] px-3.5 py-2 rounded-xl border border-[#c5e1a5]">
+                      🤖 <strong>AUTO Mode:</strong> LED turns ON when temp &gt; {(tempThresholds.offThreshold ?? 35.0).toFixed(1)}°C
+                    </div>
+                    <button
+                      onClick={() => {
+                        setThresholdInput(String(tempThresholds.offThreshold || 35.0));
+                        setShowSettingsModal(true);
+                      }}
+                      className="px-3 py-2 bg-[#33691e] text-[#f0f4c3] text-xs font-bold rounded-xl shadow hover:bg-[#2e7d32] transition flex items-center gap-1"
+                    >
+                      ⚙️ Change Threshold
+                    </button>
                   </div>
                 )}
               </div>
@@ -891,6 +991,15 @@ const Dborad = () => {
                     >
                       {isHeaterOn ? "Heater ON" : "Heater OFF"}
                     </span>
+                    <button
+                      onClick={() => {
+                        setThresholdInput(String(tempThresholds.offThreshold || 35.0));
+                        setShowSettingsModal(true);
+                      }}
+                      className="text-xs text-[#2e7d32] hover:underline font-bold"
+                    >
+                      Threshold: {(tempThresholds.offThreshold ?? 35.0).toFixed(1)}°C ⚙️
+                    </button>
                   </div>
                 </motion.div>
               ))
@@ -974,6 +1083,125 @@ const Dborad = () => {
         )}
       </AnimatePresence>
 
+      {/* ========================================================================= */}
+      {/* THRESHOLD SETTINGS MODAL                                                  */}
+      {/* ========================================================================= */}
+      <AnimatePresence>
+        {showSettingsModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-[#f0f4c3] text-[#33691e] rounded-3xl p-6 md:p-8 max-w-md w-full shadow-2xl border-2 border-[#cddc39]"
+            >
+              <div className="flex justify-between items-center mb-4">
+                <div>
+                  <h3 className="text-xl font-bold flex items-center gap-2">
+                    🌡️ Set Temperature Threshold
+                  </h3>
+                  <p className="text-xs text-[#558b2f]">
+                    Configure dynamic trigger temperature
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowSettingsModal(false)}
+                  className="text-gray-500 hover:text-gray-800 text-2xl font-bold"
+                >
+                  &times;
+                </button>
+              </div>
+
+              <p className="text-xs text-[#558b2f] mb-4">
+                When hive temperature in <strong>AUTO</strong> mode <strong>exceeds</strong> this value, the LED / heater will turn <strong>ON</strong>. When it drops to or below this value, it will turn <strong>OFF</strong>.
+              </p>
+
+              <form onSubmit={handleSaveThreshold} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider mb-1.5 text-[#33691e]">
+                    Threshold Temperature (°C)
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="1"
+                      max="70"
+                      value={thresholdInput}
+                      onChange={(e) => setThresholdInput(e.target.value)}
+                      className="w-full px-4 py-2.5 rounded-xl border-2 border-[#cddc39] bg-white text-[#33691e] text-xl font-black focus:outline-none focus:ring-2 focus:ring-[#33691e]"
+                      required
+                    />
+                    <span className="text-xl font-black text-[#33691e]">°C</span>
+                  </div>
+
+                  {/* Preset Quick Chips */}
+                  <div className="flex flex-wrap gap-1.5 mt-3">
+                    <span className="text-[11px] font-bold text-[#558b2f] self-center mr-1">Quick Presets:</span>
+                    {[30, 32, 34, 35, 37, 40].map((quickVal) => (
+                      <button
+                        key={quickVal}
+                        type="button"
+                        onClick={() => setThresholdInput(String(quickVal))}
+                        className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all ${
+                          parseFloat(thresholdInput) === quickVal
+                            ? "bg-[#33691e] text-[#f0f4c3] shadow-xs"
+                            : "bg-[#dcedc8] text-[#33691e] hover:bg-[#c5e1a5]"
+                        }`}
+                      >
+                        {quickVal}°C
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Live simulation banner */}
+                <div className="p-3 bg-[#dcedc8] rounded-xl text-xs text-[#33691e] space-y-1.5 border border-[#c5e1a5]">
+                  <div className="flex justify-between items-center font-bold">
+                    <span>Current Hive Temp:</span>
+                    <span className="text-base text-[#2e7d32]">
+                      {heaterState.temperature != null
+                        ? `${heaterState.temperature}°C`
+                        : hives[0]?.temp != null
+                        ? `${hives[0].temp}°C`
+                        : "N/A"}
+                    </span>
+                  </div>
+                  <div className="border-t border-[#c5e1a5] pt-1.5 space-y-1">
+                    <div className="flex items-center gap-1.5">
+                      <span>🔥</span>
+                      <span>Above <strong>{thresholdInput || 35}°C</strong>:</span>
+                      <span className="font-extrabold text-red-600">LED / HEATER ON</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span>❄️</span>
+                      <span><strong>{thresholdInput || 35}°C</strong> or below:</span>
+                      <span className="font-extrabold text-gray-700">LED / HEATER OFF</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex justify-end gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowSettingsModal(false)}
+                    className="px-4 py-2 rounded-lg border border-[#cddc39] text-sm font-semibold hover:bg-[#dcedc8]"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingThreshold}
+                    className="px-5 py-2 rounded-lg bg-[#33691e] text-[#f0f4c3] text-sm font-bold shadow hover:bg-[#2e7d32] disabled:opacity-50 transition-all"
+                  >
+                    {savingThreshold ? "Updating..." : "Save & Apply Threshold"}
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
     </div>
   );
