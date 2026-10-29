@@ -35,6 +35,9 @@ const Dborad = () => {
     temperature: null,
     humidity: null,
     heaterStatus: "OFF",
+    ledStatus: "OFF",
+    hwHeaterStatus: null,
+    hwLedStatus: null,
     mode: "AUTO",
     onThreshold: 30.0,
     offThreshold: 35.0,
@@ -137,7 +140,11 @@ const Dborad = () => {
           lastKnownHeaterStatusRef.current = newStatus;
         }
 
-        setHeaterState(res.data);
+        setHeaterState((prev) => ({
+          ...prev,
+          ...res.data,
+          ledStatus: res.data.ledStatus || res.data.heaterStatus || "OFF",
+        }));
         setHeaters((prev) => ({
           ...prev,
           [farmId || 1]: res.data.heaterStatus === "ON",
@@ -233,7 +240,7 @@ const Dborad = () => {
         ];
         setHives(hiveData);
 
-        // Ground-truth physical heater state and control mode reported by ESP32 via ThingSpeak
+        // Telemetry readings reported by ESP32 via ThingSpeak (Field 6 = Heater, Field 7 = Mode, Field 8 = LED)
         const hwHeaterStatus =
           latestSensorEntry.field6 != null
             ? String(latestSensorEntry.field6).trim() === "1"
@@ -246,36 +253,22 @@ const Dborad = () => {
               ? "MANUAL"
               : "AUTO"
             : null;
+        const hwLedStatus =
+          latestSensorEntry.field8 != null
+            ? String(latestSensorEntry.field8).trim() === "1"
+              ? "ON"
+              : "OFF"
+            : null;
 
-        // State change detection & heads-up status bar notification trigger directly from ThingSpeak hardware feed
-        if (hwHeaterStatus != null) {
-          if (
-            lastKnownHeaterStatusRef.current !== null &&
-            lastKnownHeaterStatusRef.current !== hwHeaterStatus
-          ) {
-            notificationService.showHeaterNotification({
-              status: hwHeaterStatus,
-              temperature: currentTemp != null ? currentTemp : 0,
-              mode: hwMode || "AUTO",
-              reason:
-                hwMode === "MANUAL"
-                  ? "Manual control command executed"
-                  : hwHeaterStatus === "ON"
-                  ? `Temperature rose above threshold (${(tempThresholds.offThreshold ?? 35.0).toFixed(1)}°C)`
-                  : `Temperature fell to threshold (${(tempThresholds.offThreshold ?? 35.0).toFixed(1)}°C) or below`,
-            });
-          }
-          lastKnownHeaterStatusRef.current = hwHeaterStatus;
-
-          setHeaterState((prev) => ({
-            ...prev,
-            heaterStatus: hwHeaterStatus,
-            mode: hwMode || prev.mode || "AUTO",
-            temperature: currentTemp != null ? currentTemp : prev.temperature,
-            humidity: currentHumidity != null ? currentHumidity : prev.humidity,
-            esp32Online: diffMin < 5,
-          }));
-        }
+        // Update live status and hive sensor readings without overwriting backend state or causing flapping
+        setHeaterState((prev) => ({
+          ...prev,
+          temperature: currentTemp != null ? currentTemp : prev.temperature,
+          humidity: currentHumidity != null ? currentHumidity : prev.humidity,
+          esp32Online: diffMin < 5,
+          hwHeaterStatus: hwHeaterStatus || prev.hwHeaterStatus,
+          hwLedStatus: hwLedStatus || prev.hwLedStatus,
+        }));
 
         // Asynchronously sync telemetry to backend for database history
         if (currentTemp != null) {
@@ -344,12 +337,14 @@ const Dborad = () => {
   const handleModeChange = async (newMode) => {
     try {
       setLoadingHeater(true);
+      const field7 = newMode === "MANUAL" ? 1 : 0;
+      const heaterVal = heaterState.heaterStatus === "ON" ? 1 : 0;
+      const ledVal = (heaterState.ledStatus || heaterState.heaterStatus) === "ON" ? 1 : 0;
 
-      // 1. Direct ThingSpeak Cloud Broker update (Field 7: 0 = AUTO, 1 = MANUAL)
+      // 1. Direct ThingSpeak Cloud Broker update (Field 6 = Heater, Field 7 = Mode, Field 8 = LED)
       try {
-        const field7 = newMode === "MANUAL" ? 1 : 0;
         await fetch(
-          `https://api.thingspeak.com/update?api_key=${THINGSPEAK_WRITE_KEY}&field1=${Number(farmId || 1)}&field7=${field7}`
+          `https://api.thingspeak.com/update?api_key=${THINGSPEAK_WRITE_KEY}&field1=${Number(farmId || 1)}&field6=${heaterVal}&field7=${field7}&field8=${ledVal}`
         );
       } catch (tsErr) {
         console.warn("ThingSpeak direct sync notice:", tsErr);
@@ -383,7 +378,19 @@ const Dborad = () => {
       const newStatus = turnOn ? "ON" : "OFF";
       const fieldVal = turnOn ? 1 : 0;
 
-      // 1. Direct ThingSpeak Cloud Broker update (Field 6 = Status, Field 7 = MANUAL, Field 8 = Command)
+      // Immediate local state update to prevent UI flicker
+      setHeaterState((prev) => ({
+        ...prev,
+        heaterStatus: newStatus,
+        ledStatus: newStatus,
+        mode: "MANUAL",
+      }));
+      setHeaters((prev) => ({
+        ...prev,
+        [farmId || 1]: turnOn,
+      }));
+
+      // 1. Direct ThingSpeak Cloud Broker update (Field 6 = Heater, Field 7 = MANUAL, Field 8 = LED)
       try {
         await fetch(
           `https://api.thingspeak.com/update?api_key=${THINGSPEAK_WRITE_KEY}&field1=${Number(farmId || 1)}&field6=${fieldVal}&field7=1&field8=${fieldVal}`
@@ -408,15 +415,10 @@ const Dborad = () => {
           status: newStatus,
           temperature: heaterState.temperature,
           mode: "MANUAL",
-          reason: "Manual control command executed",
+          reason: turnOn ? "Manual Heater ON command executed" : "Manual Heater OFF command executed",
         });
       }
 
-      setHeaterState((prev) => ({
-        ...prev,
-        heaterStatus: newStatus,
-        mode: "MANUAL",
-      }));
       fetchHeaterStatus();
       fetchNotifications();
     } catch (err) {
@@ -522,6 +524,7 @@ const Dborad = () => {
   };
 
   const isHeaterOn = heaterState.heaterStatus === "ON";
+  const isLedOn = (heaterState.ledStatus || heaterState.heaterStatus) === "ON";
   const isAuto = heaterState.mode === "AUTO";
   const displayTemp = heaterState.temperature != null
     ? `${Number(heaterState.temperature).toFixed(1)}°C`
@@ -638,7 +641,7 @@ const Dborad = () => {
                   Mode: {heaterState.mode}
                 </div>
 
-                {/* Heater State Badge */}
+                {/* Heater State Badge (Field 6) */}
                 <div
                   className={`px-4 py-1.5 rounded-full text-xs font-black uppercase tracking-wider shadow-sm flex items-center gap-1.5 ${
                     isHeaterOn
@@ -647,6 +650,17 @@ const Dborad = () => {
                   }`}
                 >
                   <span>{isHeaterOn ? "🔥 HEATER: ON" : "⚪ HEATER: OFF"}</span>
+                </div>
+
+                {/* LED State Badge (ThingSpeak Field 8) */}
+                <div
+                  className={`px-4 py-1.5 rounded-full text-xs font-black uppercase tracking-wider shadow-sm flex items-center gap-1.5 ${
+                    isLedOn
+                      ? "bg-amber-400 text-amber-950 ring-2 ring-amber-300 animate-pulse shadow-amber-200"
+                      : "bg-gray-200 text-gray-700 border border-gray-400"
+                  }`}
+                >
+                  <span>{isLedOn ? "💡 LED: ON (F8)" : "⚪ LED: OFF (F8)"}</span>
                 </div>
               </div>
             </div>

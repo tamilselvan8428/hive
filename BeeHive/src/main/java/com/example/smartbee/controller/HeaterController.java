@@ -10,6 +10,7 @@ import com.example.smartbee.model.HeaterState;
 import com.example.smartbee.model.User;
 import com.example.smartbee.repository.ApiKeyRepository;
 import com.example.smartbee.repository.HeaterLogRepository;
+import com.example.smartbee.repository.LedRepository;
 import com.example.smartbee.repository.UserRepository;
 import com.example.smartbee.service.HeaterControlService;
 import com.example.smartbee.service.SmsService;
@@ -35,6 +36,7 @@ public class HeaterController {
     private final HeaterLogRepository heaterLogRepository;
     private final UserRepository userRepository;
     private final ApiKeyRepository apiKeyRepository;
+    private final LedRepository ledRepository;
 
     /**
      * Resolves authenticated user's farmId or validates that the requested farmId belongs to them.
@@ -88,6 +90,10 @@ public class HeaterController {
             res.put("temperature", state.getCurrentTemperature());
             res.put("humidity", state.getCurrentHumidity());
             res.put("heaterStatus", state.getHeaterStatus());
+            String ledStatus = ledRepository.findByFarmId(farmId)
+                    .map(l -> l.getLedStatus() != null ? l.getLedStatus().toUpperCase() : state.getHeaterStatus())
+                    .orElse(state.getHeaterStatus());
+            res.put("ledStatus", ledStatus);
             res.put("mode", state.getMode());
             res.put("onThreshold", state.getOnThreshold());
             res.put("offThreshold", state.getOffThreshold());

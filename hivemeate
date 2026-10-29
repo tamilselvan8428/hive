@@ -20,14 +20,15 @@ const char* thingSpeakChannelId = "3126283";
 const char* thingSpeakWriteKey  = "A0B9TJ5N4L8R72ZE";
 const char* thingSpeakReadKey   = "C4SNIR7EP4W21360";
 
-// ThingSpeak last feed
-// Field 7 = Mode
-// 0 = AUTO
-// 1 = MANUAL
-//
-// Field 8 = Manual Heater Command
-// 0 = OFF
-// 1 = ON
+// ThingSpeak Fields:
+// Field 1 = Device / Farm ID
+// Field 2 = Temperature
+// Field 3 = Humidity
+// Field 4 = pH
+// Field 5 = Weight
+// Field 6 = Heater State (0 = OFF, 1 = ON)
+// Field 7 = Control Mode (0 = AUTO, 1 = MANUAL)
+// Field 8 = LED State    (0 = OFF, 1 = ON)
 
 const char* thingSpeakLastFeedUrl =
   "http://api.thingspeak.com/channels/3126283/feeds/last.json?api_key=C4SNIR7EP4W21360";
@@ -45,7 +46,8 @@ const int deviceFarmId = 1;
 const bool RELAY_ACTIVE_LOW = false;
 
 // Heater / LED output
-const int heaterRelayPin = 2;
+const int heaterRelayPin = 2; // Heater output relay
+const int ledPin = 2;         // Dedicated LED pin (defaults to GPIO 2 built-in LED)
 
 // =====================================================
 // DHT11
@@ -88,11 +90,15 @@ float calibrationFactor = -7050.0;
 
 String controlMode = "AUTO";
 
-// Current physical heater / LED state
+// Current physical heater state (ThingSpeak Field 6)
 bool burnerState = false;
 
-// Previous state
+// Current physical LED state (ThingSpeak Field 8)
+bool ledState = false;
+
+// Previous states
 bool previousBurnerState = false;
+bool previousLedState = false;
  
 // First run flag
 bool isFirstRun = true;
@@ -129,6 +135,7 @@ const unsigned long sensorReadInterval = 15000;
 // =====================================================
 
 void setHardwareRelay(bool state);
+void setHardwareLed(bool state);
 void readAndUploadSensors();
 void uploadToThingSpeak();
 void fetchControlCommands();
@@ -274,6 +281,22 @@ void setHardwareRelay(bool state) {
     digitalWrite(
       heaterRelayPin,
       state ? HIGH : LOW
+    );
+  }
+}
+
+void setHardwareLed(bool state) {
+  if (ledPin != heaterRelayPin) {
+    digitalWrite(
+      ledPin,
+      state ? HIGH : LOW
+    );
+  } else {
+    // If sharing Pin 2, either heater or led ON keeps Pin 2 active
+    bool active = burnerState || ledState;
+    digitalWrite(
+      heaterRelayPin,
+      RELAY_ACTIVE_LOW ? (active ? LOW : HIGH) : (active ? HIGH : LOW)
     );
   }
 }
@@ -601,7 +624,7 @@ void uploadToThingSpeak() {
 
     "&field8=" +
     String(
-      manualHeaterCommand
+      ledState
         ? "1"
         : "0"
     );
@@ -744,71 +767,42 @@ void fetchControlCommands() {
         }
 
         // ===============================================
-        // FIELD 8 - MANUAL COMMAND
         // ===============================================
-
-        if (
-          doc.containsKey("field8") &&
-          !doc["field8"].isNull()
-        ) {
-
-          const char* f8 =
-            doc["field8"];
-
-          bool newCmd =
-            (
-              strcmp(f8, "1") == 0
-            );
-
-          if (
-            newCmd !=
-            manualHeaterCommand
-          ) {
-
-            manualHeaterCommand =
-              newCmd;
-
-            Serial.print(
-              "[THINGSPEAK] Manual command: "
-            );
-
-            Serial.println(
-              manualHeaterCommand
-                ? "ON"
-                : "OFF"
-            );
-          }
-        }
-
+        // FIELD 6 - HEATER COMMAND
         // ===============================================
-        // APPLY BACKEND COMMAND (FIELD 6 / FIELD 8)
-        // ===============================================
-        bool cmdFound = false;
-        bool newCmd = false;
-
         if (doc.containsKey("field6") && !doc["field6"].isNull()) {
           const char* f6 = doc["field6"];
-          newCmd = (strcmp(f6, "1") == 0);
-          cmdFound = true;
-        } else if (doc.containsKey("field8") && !doc["field8"].isNull()) {
-          const char* f8 = doc["field8"];
-          newCmd = (strcmp(f8, "1") == 0);
-          cmdFound = true;
-        }
-
-        if (cmdFound) {
-          if (burnerState != newCmd || isFirstRun) {
-            burnerState = newCmd;
+          bool newHeater = (strcmp(f6, "1") == 0);
+          if (burnerState != newHeater || isFirstRun) {
+            burnerState = newHeater;
             setHardwareRelay(burnerState);
             previousBurnerState = burnerState;
-            isFirstRun = false;
 
-            Serial.print("[BACKEND COMMAND] Mode: ");
+            Serial.print("[THINGSPEAK] Mode: ");
             Serial.print(controlMode);
-            Serial.print(" | LED / Relay: ");
+            Serial.print(" | Heater (Field 6): ");
             Serial.println(burnerState ? "ON" : "OFF");
           }
         }
+
+        // ===============================================
+        // FIELD 8 - LED COMMAND
+        // ===============================================
+        if (doc.containsKey("field8") && !doc["field8"].isNull()) {
+          const char* f8 = doc["field8"];
+          bool newLed = (strcmp(f8, "1") == 0);
+          if (ledState != newLed || isFirstRun) {
+            ledState = newLed;
+            setHardwareLed(ledState);
+            previousLedState = ledState;
+
+            Serial.print("[THINGSPEAK] Mode: ");
+            Serial.print(controlMode);
+            Serial.print(" | LED (Field 8): ");
+            Serial.println(ledState ? "ON" : "OFF");
+          }
+        }
+        isFirstRun = false;
 
       } else {
 

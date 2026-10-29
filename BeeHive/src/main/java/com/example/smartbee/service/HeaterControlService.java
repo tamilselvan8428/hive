@@ -353,9 +353,10 @@ public class HeaterControlService {
         // Async update to ThingSpeak
         new Thread(() -> {
             try {
-                int field6 = "ON".equalsIgnoreCase(heaterStatus) ? 1 : 0;
-                int field7 = "MANUAL".equalsIgnoreCase(mode) ? 1 : 0;
-                int field8 = field6; // manual command
+                int field6 = "ON".equalsIgnoreCase(heaterStatus) ? 1 : 0; // Field 6: Heater State
+                int field7 = "MANUAL".equalsIgnoreCase(mode) ? 1 : 0;     // Field 7: Control Mode
+                Optional<Led> ledOpt = ledRepository.findByFarmId(farmId);
+                int field8 = ledOpt.map(l -> "on".equalsIgnoreCase(l.getLedStatus()) ? 1 : 0).orElse(field6); // Field 8: LED State
 
                 String url = String.format(
                         "https://api.thingspeak.com/update?api_key=%s&field1=%d&field6=%d&field7=%d&field8=%d",
