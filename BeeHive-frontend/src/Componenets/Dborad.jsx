@@ -38,7 +38,7 @@ const Dborad = () => {
     ledStatus: "OFF",
     hwHeaterStatus: null,
     hwLedStatus: null,
-    mode: "AUTO",
+    mode: localStorage.getItem("custom_heater_mode") || "AUTO",
     onThreshold: 30.0,
     offThreshold: 35.0,
     reason: "Initializing system...",
@@ -142,9 +142,11 @@ const Dborad = () => {
           lastKnownHeaterStatusRef.current = newStatus;
         }
 
+        const savedMode = localStorage.getItem("custom_heater_mode");
         setHeaterState((prev) => ({
           ...prev,
           ...res.data,
+          mode: savedMode || prev.mode || res.data.mode || "AUTO",
           ledStatus: res.data.ledStatus || res.data.heaterStatus || "OFF",
         }));
         setHeaters((prev) => ({
@@ -430,6 +432,9 @@ const Dborad = () => {
         console.warn("Backend mode sync notice:", beErr);
       }
 
+      // Persist user selection immediately to prevent background poll reversion
+      localStorage.setItem("custom_heater_mode", newMode);
+
       setHeaterState((prev) => ({
         ...prev,
         mode: newMode,
@@ -440,7 +445,6 @@ const Dborad = () => {
         ...prev,
         [farmId || 1]: targetStatus === "ON",
       }));
-      fetchHeaterStatus();
       fetchNotifications();
     } catch (err) {
       console.error("Error changing mode:", err);
@@ -457,7 +461,8 @@ const Dborad = () => {
       const newStatus = turnOn ? "ON" : "OFF";
       const fieldVal = turnOn ? 1 : 0;
 
-      // Immediate local state update to prevent UI flicker
+      // Immediate local state update and mode locking to prevent UI flicker
+      localStorage.setItem("custom_heater_mode", "MANUAL");
       setHeaterState((prev) => ({
         ...prev,
         heaterStatus: newStatus,
@@ -474,6 +479,7 @@ const Dborad = () => {
         await fetch(
           `https://api.thingspeak.com/update?api_key=${THINGSPEAK_WRITE_KEY}&field1=${Number(farmId || 1)}&field6=${fieldVal}&field7=1&field8=${fieldVal}`
         );
+        lastThingSpeakWriteTimeRef.current = Date.now();
       } catch (tsErr) {
         console.warn("ThingSpeak direct sync notice:", tsErr);
       }

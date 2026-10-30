@@ -36,9 +36,18 @@ public class SecurityConfig {
             .csrf(AbstractHttpConfigurer::disable)
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/api/auth/**", "/api/test/**", "/api/led/**").permitAll()
-                .requestMatchers("/api/heater/telemetry", "/api/heater/notifications/**", "/api/notifications/**", "/api/heater/status", "/api/heater/status/**").permitAll()
+                .requestMatchers(
+                    "/api/heater/telemetry",
+                    "/api/heater/notifications/**",
+                    "/api/notifications/**",
+                    "/api/heater/status",
+                    "/api/heater/status/**",
+                    "/api/heater/mode",
+                    "/api/heater/manual",
+                    "/api/heater/settings"
+                ).permitAll()
                 .requestMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll()
-                .requestMatchers("/api/user/**", "/api/heater/**").authenticated()
+                .requestMatchers("/api/user/**").authenticated()
                 .anyRequest().authenticated()
             )
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
