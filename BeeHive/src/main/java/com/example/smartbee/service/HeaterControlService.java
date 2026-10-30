@@ -96,13 +96,13 @@ public class HeaterControlService {
                 log.warn("[AUTO HEATER] Farm {}: Sensor reading invalid/NaN. Defaulting heater to OFF for safety.", farmId);
             } else {
                 double threshold = state.getOffThreshold() != null ? state.getOffThreshold() : 35.0;
-                // Rule: If temperature > threshold -> ON, else -> OFF
-                if (temperature > threshold) {
+                // Rule: If temperature >= threshold -> ON, else -> OFF
+                if (temperature >= threshold) {
                     targetStatus = "ON";
-                    reason = String.format("Temperature (%.1f°C) above %.1f°C -> Heater ON", temperature, threshold);
+                    reason = String.format("Temperature (%.1f°C) reached/above %.1f°C -> Heater ON", temperature, threshold);
                 } else {
                     targetStatus = "OFF";
-                    reason = String.format("Temperature (%.1f°C) <= %.1f°C -> Heater OFF", temperature, threshold);
+                    reason = String.format("Temperature (%.1f°C) < %.1f°C -> Heater OFF", temperature, threshold);
                 }
             }
         } else {
@@ -140,12 +140,12 @@ public class HeaterControlService {
             Double temp = state.getCurrentTemperature();
             if (temp != null && !Double.isNaN(temp)) {
                 double threshold = state.getOffThreshold() != null ? state.getOffThreshold() : 35.0;
-                if (temp > threshold) {
+                if (temp >= threshold) {
                     targetStatus = "ON";
-                    reason = String.format("Switched to AUTO: Temperature (%.1f°C) > %.1f°C -> Heater ON", temp, threshold);
+                    reason = String.format("Switched to AUTO: Temperature (%.1f°C) >= %.1f°C -> Heater ON", temp, threshold);
                 } else {
                     targetStatus = "OFF";
-                    reason = String.format("Switched to AUTO: Temperature (%.1f°C) <= %.1f°C -> Heater OFF", temp, threshold);
+                    reason = String.format("Switched to AUTO: Temperature (%.1f°C) < %.1f°C -> Heater OFF", temp, threshold);
                 }
             }
         } else {

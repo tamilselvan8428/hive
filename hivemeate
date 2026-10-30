@@ -30,8 +30,9 @@ const char* thingSpeakReadKey   = "C4SNIR7EP4W21360";
 // Field 7 = Control Mode (0 = AUTO, 1 = MANUAL)
 // Field 8 = LED State    (0 = OFF, 1 = ON)
 
-const char* thingSpeakLastFeedUrl =
-  "http://api.thingspeak.com/channels/3126283/feeds/last.json?api_key=C4SNIR7EP4W21360";
+// Field 6 = Heater & LED Actuator State (0 = OFF, 1 = ON)
+const char* thingSpeakField6Url =
+  "http://api.thingspeak.com/channels/3126283/fields/6/last.txt?api_key=C4SNIR7EP4W21360";
 
 const int deviceFarmId = 1;
 
@@ -79,8 +80,12 @@ HX711 scale;
 // Change this value according to your load-cell calibration
 float calibrationFactor = -7050.0;
 
-// Decision logic (AUTO threshold >35C and MANUAL overrides) is managed by the Spring Boot Backend.
-// ESP32 executes commands sent by the backend via ThingSpeak.
+// =====================================================
+// Actuator Architecture:
+// Temperature threshold evaluation is handled STRICTLY by Software
+// (Dashboard & Backend). Hardware acts purely as sensor reporter and actuator.
+// =====================================================
+float temperatureThreshold = 35.0; // Kept for reference; software dictates commands.
 
 // =====================================================
 // Control Mode
@@ -126,14 +131,15 @@ float humidity = NAN;
 unsigned long lastControlPollTime = 0;
 const unsigned long controlPollInterval = 5000;
 
-// Sensor reading / ThingSpeak upload
+// Sensor reading / ThingSpeak upload (30s spacing leaves plenty of free rate-limit window for commands)
 unsigned long lastSensorReadTime = 0;
-const unsigned long sensorReadInterval = 15000;
+const unsigned long sensorReadInterval = 30000;
 
 // =====================================================
 // Function Prototypes
 // =====================================================
 
+void updatePhysicalPins();
 void setHardwareRelay(bool state);
 void setHardwareLed(bool state);
 void readAndUploadSensors();
@@ -161,11 +167,20 @@ void setup() {
   // -------------------------------------------------
 
   pinMode(heaterRelayPin, OUTPUT);
+  if (ledPin != heaterRelayPin) {
+    pinMode(ledPin, OUTPUT);
+  }
+
+  // Quick 500ms hardware self-test blink at boot to verify LED connection
+  digitalWrite(heaterRelayPin, HIGH);
+  delay(500);
+  digitalWrite(heaterRelayPin, LOW);
 
   // Safe startup state
   setHardwareRelay(false);
+  setHardwareLed(false);
 
-  Serial.println("[SYSTEM] Heater/LED initialized OFF.");
+  Serial.println("[SYSTEM] Heater/LED hardware test complete, initialized OFF.");
 
   // -------------------------------------------------
   // 2. Initialize DHT11
@@ -267,38 +282,35 @@ void setup() {
 // HARDWARE RELAY / LED CONTROL
 // =====================================================
 
-void setHardwareRelay(bool state) {
-
-  if (RELAY_ACTIVE_LOW) {
-
-    digitalWrite(
-      heaterRelayPin,
-      state ? LOW : HIGH
-    );
-
-  } else {
-
-    digitalWrite(
-      heaterRelayPin,
-      state ? HIGH : LOW
-    );
-  }
-}
-
-void setHardwareLed(bool state) {
-  if (ledPin != heaterRelayPin) {
-    digitalWrite(
-      ledPin,
-      state ? HIGH : LOW
-    );
-  } else {
-    // If sharing Pin 2, either heater or led ON keeps Pin 2 active
+void updatePhysicalPins() {
+  if (heaterRelayPin == ledPin) {
+    // Both relay and LED mapped to same pin (e.g. GPIO 2 built-in LED)
     bool active = burnerState || ledState;
     digitalWrite(
       heaterRelayPin,
       RELAY_ACTIVE_LOW ? (active ? LOW : HIGH) : (active ? HIGH : LOW)
     );
+  } else {
+    // Separate Relay and LED pins
+    digitalWrite(
+      heaterRelayPin,
+      RELAY_ACTIVE_LOW ? (burnerState ? LOW : HIGH) : (burnerState ? HIGH : LOW)
+    );
+    digitalWrite(
+      ledPin,
+      ledState ? HIGH : LOW
+    );
   }
+}
+
+void setHardwareRelay(bool state) {
+  burnerState = state;
+  updatePhysicalPins();
+}
+
+void setHardwareLed(bool state) {
+  ledState = state;
+  updatePhysicalPins();
 }
 
 
@@ -472,6 +484,13 @@ void readAndUploadSensors() {
 
 
   // =================================================
+  // 4. HARDWARE IS SENSOR REPORTER & ACTUATOR ONLY
+  // =================================================
+  // The ESP32 does NOT autonomously make ON/OFF decisions based on temperature.
+  // Software (Dashboard / Backend) evaluates sensor telemetry and transmits
+  // control commands via ThingSpeak. The ESP32 strictly actuates incoming commands.
+
+  // =================================================
   // 5. UPLOAD TO THINGSPEAK
   // =================================================
 
@@ -606,27 +625,6 @@ void uploadToThingSpeak() {
       isnan(weight)
         ? "0.00"
         : String(weight, 2)
-    ) +
-
-    "&field6=" +
-    String(
-      burnerState
-        ? "1"
-        : "0"
-    ) +
-
-    "&field7=" +
-    String(
-      controlMode == "MANUAL"
-        ? "1"
-        : "0"
-    ) +
-
-    "&field8=" +
-    String(
-      ledState
-        ? "1"
-        : "0"
     );
 
   http.begin(url);
@@ -692,11 +690,11 @@ void fetchControlCommands() {
 
   if (
     http.begin(
-      thingSpeakLastFeedUrl
+      thingSpeakField6Url
     )
   ) {
 
-    http.setTimeout(3000);
+    http.setTimeout(4000);
 
     int httpCode =
       http.GET();
@@ -707,109 +705,23 @@ void fetchControlCommands() {
 
       String response =
         http.getString();
+      response.trim();
 
-      // =================================================
-      // ArduinoJson compatibility
-      // =================================================
+      if (response == "1" || response == "0") {
+        bool commandOn = (response == "1");
 
-#if ARDUINOJSON_VERSION_MAJOR >= 7
-
-      JsonDocument doc;
-
-#else
-
-      StaticJsonDocument<512> doc;
-
-#endif
-
-      DeserializationError error =
-        deserializeJson(
-          doc,
-          response
-        );
-
-      if (!error) {
-
-        // ===============================================
-        // FIELD 7 - CONTROL MODE
-        // ===============================================
-
-        if (
-          doc.containsKey("field7") &&
-          !doc["field7"].isNull()
-        ) {
-
-          const char* f7 =
-            doc["field7"];
-
-          String newMode =
-            (
-              strcmp(f7, "1") == 0
-            )
-            ? "MANUAL"
-            : "AUTO";
-
-          if (
-            newMode != controlMode
-          ) {
-
-            controlMode =
-              newMode;
-
-            Serial.print(
-              "[THINGSPEAK] Control mode: "
-            );
-
-            Serial.println(
-              controlMode
-            );
-          }
-        }
-
-        // ===============================================
-        // ===============================================
-        // FIELD 6 - HEATER COMMAND
-        // ===============================================
-        if (doc.containsKey("field6") && !doc["field6"].isNull()) {
-          const char* f6 = doc["field6"];
-          bool newHeater = (strcmp(f6, "1") == 0);
-          if (burnerState != newHeater || isFirstRun) {
-            burnerState = newHeater;
-            setHardwareRelay(burnerState);
-            previousBurnerState = burnerState;
-
-            Serial.print("[THINGSPEAK] Mode: ");
-            Serial.print(controlMode);
-            Serial.print(" | Heater (Field 6): ");
-            Serial.println(burnerState ? "ON" : "OFF");
-          }
-        }
-
-        // ===============================================
-        // FIELD 8 - LED COMMAND
-        // ===============================================
-        if (doc.containsKey("field8") && !doc["field8"].isNull()) {
-          const char* f8 = doc["field8"];
-          bool newLed = (strcmp(f8, "1") == 0);
-          if (ledState != newLed || isFirstRun) {
-            ledState = newLed;
-            setHardwareLed(ledState);
-            previousLedState = ledState;
-
-            Serial.print("[THINGSPEAK] Mode: ");
-            Serial.print(controlMode);
-            Serial.print(" | LED (Field 8): ");
-            Serial.println(ledState ? "ON" : "OFF");
-          }
+        if (commandOn != burnerState || isFirstRun) {
+          burnerState = commandOn;
+          ledState = commandOn;
+          updatePhysicalPins();
+          Serial.print("[ACTUATOR TRIGGERED] Field 6 Command -> ");
+          Serial.println(commandOn ? "LED & HEATER ON" : "LED & HEATER OFF");
         }
         isFirstRun = false;
-
-      } else {
-
-        Serial.println(
-          "[THINGSPEAK] JSON parse error."
-        );
       }
+    } else {
+      Serial.print("[THINGSPEAK] Poll failed, HTTP: ");
+      Serial.println(httpCode);
     }
 
     http.end();

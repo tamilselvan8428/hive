@@ -59,6 +59,8 @@ const Dborad = () => {
 
   // Ref tracking last known heater status to ensure notifications fire ONLY on state transition (OFF -> ON or ON -> OFF)
   const lastKnownHeaterStatusRef = useRef(null);
+  // Rate-limiting ref for ThingSpeak writes (free tier requires >= 15 seconds between writes)
+  const lastThingSpeakWriteTimeRef = useRef(0);
 
   const [tempThresholds, setTempThresholds] = useState(() => {
     const saved = localStorage.getItem("custom_temp_threshold");
@@ -260,15 +262,70 @@ const Dborad = () => {
               : "OFF"
             : null;
 
-        // Update live status and hive sensor readings without overwriting backend state or causing flapping
-        setHeaterState((prev) => ({
-          ...prev,
-          temperature: currentTemp != null ? currentTemp : prev.temperature,
-          humidity: currentHumidity != null ? currentHumidity : prev.humidity,
-          esp32Online: diffMin < 5,
-          hwHeaterStatus: hwHeaterStatus || prev.hwHeaterStatus,
-          hwLedStatus: hwLedStatus || prev.hwLedStatus,
-        }));
+        // Software-driven AUTO Mode Evaluation & Actuation:
+        // Hardware acts purely as sensor reporter and actuator.
+        // Software evaluates threshold and transmits commands to ThingSpeak.
+        setHeaterState((prev) => {
+          const nextState = {
+            ...prev,
+            temperature: currentTemp != null ? currentTemp : prev.temperature,
+            humidity: currentHumidity != null ? currentHumidity : prev.humidity,
+            esp32Online: diffMin < 5,
+            hwHeaterStatus: hwHeaterStatus || prev.hwHeaterStatus,
+            hwLedStatus: hwLedStatus || prev.hwLedStatus,
+          };
+
+          const activeThreshold = tempThresholds.offThreshold ?? tempThresholds.onThreshold ?? 35.0;
+
+          if (prev.mode === "AUTO" && currentTemp != null && !isNaN(currentTemp)) {
+            // Reaching or exceeding threshold -> ON, below threshold -> OFF
+            const targetStatus = currentTemp >= activeThreshold ? "ON" : "OFF";
+            const currentStatus = prev.heaterStatus || "OFF";
+            const nowMs = Date.now();
+
+            // Trigger command when state decision changes, respecting ThingSpeak 15s write limit
+            if (targetStatus !== currentStatus && nowMs - lastThingSpeakWriteTimeRef.current >= 15000) {
+              lastThingSpeakWriteTimeRef.current = nowMs;
+              const fieldVal = targetStatus === "ON" ? 1 : 0;
+              const reason = `AUTO: Temp (${currentTemp.toFixed(1)}°C) ${targetStatus === "ON" ? "reached/exceeded" : "below"} threshold ${activeThreshold.toFixed(1)}°C -> ${targetStatus}`;
+
+              console.log(`[AUTO TRIGGER] ${reason}`);
+              nextState.heaterStatus = targetStatus;
+              nextState.ledStatus = targetStatus;
+              nextState.reason = reason;
+
+              setHeaters((hPrev) => ({
+                ...hPrev,
+                [farmId || 1]: targetStatus === "ON",
+              }));
+
+              // Transmit command to ThingSpeak (Field 6 is the primary actuator command)
+              fetch(
+                `https://api.thingspeak.com/update?api_key=${THINGSPEAK_WRITE_KEY}&field1=${Number(farmId || 1)}&field6=${fieldVal}&field7=0&field8=${fieldVal}`
+              ).catch((err) => console.warn("Auto ThingSpeak sync warning:", err));
+
+              // Sync state to backend
+              heaterAPI
+                .setManual({
+                  farmId: Number(farmId || 1),
+                  heater: targetStatus === "ON",
+                })
+                .catch(() => {});
+
+              if (lastKnownHeaterStatusRef.current !== targetStatus) {
+                lastKnownHeaterStatusRef.current = targetStatus;
+                notificationService.showHeaterNotification({
+                  status: targetStatus,
+                  temperature: currentTemp,
+                  mode: "AUTO",
+                  reason: reason,
+                });
+              }
+            }
+          }
+
+          return nextState;
+        });
 
         // Asynchronously sync telemetry to backend for database history
         if (currentTemp != null) {
@@ -338,14 +395,27 @@ const Dborad = () => {
     try {
       setLoadingHeater(true);
       const field7 = newMode === "MANUAL" ? 1 : 0;
-      const heaterVal = heaterState.heaterStatus === "ON" ? 1 : 0;
-      const ledVal = (heaterState.ledStatus || heaterState.heaterStatus) === "ON" ? 1 : 0;
+      let targetStatus = heaterState.heaterStatus;
+      let heaterVal = heaterState.heaterStatus === "ON" ? 1 : 0;
+      let ledVal = (heaterState.ledStatus || heaterState.heaterStatus) === "ON" ? 1 : 0;
+
+      // When switching to AUTO mode, software evaluates the current temperature against threshold
+      if (newMode === "AUTO") {
+        const currentTemp = heaterState.temperature ?? (hives[0]?.temp != null ? hives[0].temp : null);
+        const threshold = tempThresholds.offThreshold ?? 35.0;
+        if (currentTemp != null && !isNaN(currentTemp)) {
+          targetStatus = currentTemp >= threshold ? "ON" : "OFF";
+          heaterVal = targetStatus === "ON" ? 1 : 0;
+          ledVal = heaterVal;
+        }
+      }
 
       // 1. Direct ThingSpeak Cloud Broker update (Field 6 = Heater, Field 7 = Mode, Field 8 = LED)
       try {
         await fetch(
           `https://api.thingspeak.com/update?api_key=${THINGSPEAK_WRITE_KEY}&field1=${Number(farmId || 1)}&field6=${heaterVal}&field7=${field7}&field8=${ledVal}`
         );
+        lastThingSpeakWriteTimeRef.current = Date.now();
       } catch (tsErr) {
         console.warn("ThingSpeak direct sync notice:", tsErr);
       }
@@ -360,7 +430,16 @@ const Dborad = () => {
         console.warn("Backend mode sync notice:", beErr);
       }
 
-      setHeaterState((prev) => ({ ...prev, mode: newMode }));
+      setHeaterState((prev) => ({
+        ...prev,
+        mode: newMode,
+        heaterStatus: targetStatus,
+        ledStatus: targetStatus,
+      }));
+      setHeaters((prev) => ({
+        ...prev,
+        [farmId || 1]: targetStatus === "ON",
+      }));
       fetchHeaterStatus();
       fetchNotifications();
     } catch (err) {
@@ -448,12 +527,27 @@ const Dborad = () => {
       // 2. If in AUTO mode and current temperature is known, evaluate immediately and sync ThingSpeak
       const currentTemp = heaterState.temperature ?? (hives[0]?.temp != null ? hives[0].temp : null);
       if (heaterState.mode === "AUTO" && currentTemp != null) {
-        const targetHeaterOn = currentTemp > val;
+        const targetHeaterOn = currentTemp >= val;
         const fieldVal = targetHeaterOn ? 1 : 0;
+        const newStatus = targetHeaterOn ? "ON" : "OFF";
+        const reason = `AUTO: Threshold set to ${val}°C. Current temp (${currentTemp.toFixed(1)}°C) ${targetHeaterOn ? "reached" : "below"} -> ${newStatus}`;
+
+        setHeaterState((prev) => ({
+          ...prev,
+          heaterStatus: newStatus,
+          ledStatus: newStatus,
+          reason,
+        }));
+        setHeaters((prev) => ({
+          ...prev,
+          [farmId || 1]: targetHeaterOn,
+        }));
+
         try {
           await fetch(
             `https://api.thingspeak.com/update?api_key=${THINGSPEAK_WRITE_KEY}&field1=${Number(farmId || 1)}&field6=${fieldVal}&field7=0&field8=${fieldVal}`
           );
+          lastThingSpeakWriteTimeRef.current = Date.now();
         } catch (tsErr) {
           console.warn("ThingSpeak direct threshold sync notice:", tsErr);
         }
